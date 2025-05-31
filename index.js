@@ -1,18 +1,23 @@
-// index.js
 const express = require('express');
-const bodyParser = require('body-parser');
 const cors = require('cors');
+const dotenv = require('dotenv');
+const usersRouter = require('./routes/users');
+
+// Load environment variables
+dotenv.config();
+
+// Initialize app
 const app = express();
+const PORT = process.env.PORT || 5000;
 
-const pool = require('./db'); // <-- Import pool from db.js
-app.locals.pool = pool;
-
+// Middleware
 app.use(cors());
-app.use(bodyParser.json());
+app.use(express.json());
 
-const userRoutes = require('./routes/users');
-app.use('/', userRoutes);
+// Routes
+app.use('/', usersRouter);
 
-app.listen(5000, () => {
-  console.log('Server is running on port 5000');
+// Start server
+app.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT}`);
 });
