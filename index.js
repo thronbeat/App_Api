@@ -9,18 +9,18 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
 
-// Simple JWT implementation (since jsonwebtoken is not in dependencies)
+// Simple JWT implementation
 const createToken = (payload) => {
   const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64');
   const payloadStr = Buffer.from(JSON.stringify({ ...payload, exp: Date.now() + 24 * 60 * 60 * 1000 })).toString('base64');
-  const signature = require('crypto').createHmac('sha256', JWT_SECRET).update(${header}.${payloadStr}).digest('base64');
-  return ${header}.${payloadStr}.${signature};
+  const signature = require('crypto').createHmac('sha256', JWT_SECRET).update(`${header}.${payloadStr}`).digest('base64');
+  return `${header}.${payloadStr}.${signature}`;
 };
 
 const verifyToken = (token) => {
   try {
     const [header, payload, signature] = token.split('.');
-    const expectedSignature = require('crypto').createHmac('sha256', JWT_SECRET).update(${header}.${payload}).digest('base64');
+    const expectedSignature = require('crypto').createHmac('sha256', JWT_SECRET).update(`${header}.${payload}`).digest('base64');
     
     if (signature !== expectedSignature) return null;
     
@@ -52,9 +52,9 @@ pool.connect((err, client, release) => {
 });
 
 // Middleware
-app.use(cors()); // Enable CORS
-app.use(bodyParser.json({ limit: '10mb' })); // Parse JSON bodies
-app.use(bodyParser.urlencoded({ extended: true })); // Parse URL-encoded bodies
+app.use(cors());
+app.use(bodyParser.json({ limit: '10mb' }));
+app.use(bodyParser.urlencoded({ extended: true }));
 
 // Authentication middleware
 const authenticateToken = async (req, res, next) => {
@@ -84,10 +84,9 @@ const authenticateToken = async (req, res, next) => {
   }
 };
 
-// Database initialization - Create tables if they don't exist
+// Database initialization
 const initializeDatabase = async () => {
   try {
-    // Users table
     await pool.query(`
       CREATE TABLE IF NOT EXISTS users (
         id SERIAL PRIMARY KEY,
@@ -99,7 +98,6 @@ const initializeDatabase = async () => {
       )
     `);
 
-    // Students table (for courses relationship)
     await pool.query(`
       CREATE TABLE IF NOT EXISTS students (
         sid SERIAL PRIMARY KEY,
@@ -111,7 +109,6 @@ const initializeDatabase = async () => {
       )
     `);
 
-    // Posts table (example entity)
     await pool.query(`
       CREATE TABLE IF NOT EXISTS posts (
         id SERIAL PRIMARY KEY,
@@ -123,7 +120,6 @@ const initializeDatabase = async () => {
       )
     `);
 
-    // Courses table (as per your schema)
     await pool.query(`
       CREATE TABLE IF NOT EXISTS courses (
         id SERIAL PRIMARY KEY,
@@ -197,12 +193,10 @@ app.get('/', (req, res) => {
 });
 
 // Auth Routes
-// Register
 app.post('/api/auth/register', async (req, res) => {
   try {
     const { username, email, password } = req.body;
 
-    // Validation
     if (!username || !email || !password) {
       return res.status(400).json({ error: 'Username, email, and password are required' });
     }
@@ -211,7 +205,6 @@ app.post('/api/auth/register', async (req, res) => {
       return res.status(400).json({ error: 'Password must be at least 6 characters long' });
     }
 
-    // Check if user already exists
     const existingUser = await pool.query(
       'SELECT id FROM users WHERE username = $1 OR email = $2',
       [username, email]
@@ -221,19 +214,15 @@ app.post('/api/auth/register', async (req, res) => {
       return res.status(400).json({ error: 'Username or email already exists' });
     }
 
-    // Hash password
     const saltRounds = 10;
     const hashedPassword = await bcrypt.hash(password, saltRounds);
 
-    // Create user
     const result = await pool.query(
       'INSERT INTO users (username, email, password) VALUES ($1, $2, $3) RETURNING id, username, email, created_at',
       [username, email, hashedPassword]
     );
 
     const user = result.rows[0];
-
-    // Generate JWT token
     const token = createToken({ userId: user.id });
 
     res.status(201).json({
@@ -252,7 +241,6 @@ app.post('/api/auth/register', async (req, res) => {
   }
 });
 
-// Login
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { username, password } = req.body;
@@ -261,7 +249,6 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(400).json({ error: 'Username and password are required' });
     }
 
-    // Find user
     const result = await pool.query(
       'SELECT id, username, email, password FROM users WHERE username = $1 OR email = $1',
       [username]
@@ -272,14 +259,11 @@ app.post('/api/auth/login', async (req, res) => {
     }
 
     const user = result.rows[0];
-
-    // Check password
     const isValidPassword = await bcrypt.compare(password, user.password);
     if (!isValidPassword) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
-    // Generate JWT token
     const token = createToken({ userId: user.id });
 
     res.json({
@@ -297,7 +281,6 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-// Get user profile
 app.get('/api/auth/profile', authenticateToken, (req, res) => {
   res.json({
     user: req.user
@@ -305,7 +288,6 @@ app.get('/api/auth/profile', authenticateToken, (req, res) => {
 });
 
 // Students CRUD Routes
-// Create student
 app.post('/api/students', authenticateToken, async (req, res) => {
   try {
     const { student_name, student_email } = req.body;
@@ -329,7 +311,6 @@ app.post('/api/students', authenticateToken, async (req, res) => {
   }
 });
 
-// Get all students
 app.get('/api/students', authenticateToken, async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
@@ -827,11 +808,10 @@ app.use((req, res) => {
   });
 });
 
-// Start server
 app.listen(PORT, () => {
-  console.log(Server is running on port ${PORT});
-  console.log(Health check: http://localhost:${PORT}/health);
-  console.log(API docs: http://localhost:${PORT}/);
+  console.log(`Server is running on port ${PORT}`);
+  console.log(`Health check: http://localhost:${PORT}/health`);
+  console.log(`API docs: http://localhost:${PORT}/`);
 });
 
 // Graceful shutdown
