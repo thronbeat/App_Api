@@ -290,15 +290,15 @@ app.get('/api/auth/profile', authenticateToken, (req, res) => {
 // Students CRUD Routes
 app.post('/api/students', authenticateToken, async (req, res) => {
   try {
-    const { student_name, student_email } = req.body;
+    const { name, email } = req.body;
 
     if (!student_name) {
       return res.status(400).json({ error: 'Student name is required' });
     }
 
     const result = await pool.query(
-      'INSERT INTO students (user_id, student_name, student_email) VALUES ($1, $2, $3) RETURNING *',
-      [req.user.id, student_name, student_email]
+      'INSERT INTO students (user_id, name, email) VALUES ($1, $2, $3) RETURNING *',
+      [req.user.id, name, email]
     );
 
     res.status(201).json({
@@ -370,7 +370,7 @@ app.get('/api/students/:id', authenticateToken, async (req, res) => {
 app.put('/api/students/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
-    const { student_name, student_email } = req.body;
+    const { name, semail } = req.body;
 
     // Check if student exists and belongs to user
     const existingStudent = await pool.query(
@@ -383,7 +383,7 @@ app.put('/api/students/:id', authenticateToken, async (req, res) => {
     }
 
     const result = await pool.query(
-      'UPDATE students SET student_name = $1, student_email = $2 WHERE sid = $3 RETURNING *',
+      'UPDATE students SET name = $1, email = $2 WHERE sid = $3 RETURNING *',
       [student_name, student_email, id]
     );
 
@@ -461,7 +461,7 @@ app.get('/api/courses', authenticateToken, async (req, res) => {
     const offset = (page - 1) * limit;
 
     const result = await pool.query(`
-      SELECT c.*, s.student_name, s.student_email
+      SELECT c.*, s.name, s.email
       FROM courses c 
       JOIN students s ON c.sid = s.sid 
       WHERE s.user_id = $1
@@ -499,7 +499,7 @@ app.get('/api/courses/:id', authenticateToken, async (req, res) => {
     const { id } = req.params;
 
     const result = await pool.query(`
-      SELECT c.*, s.student_name, s.student_email
+      SELECT c.*, s.name, s.email
       FROM courses c 
       JOIN students s ON c.sid = s.sid 
       WHERE c.id = $1 AND s.user_id = $2
