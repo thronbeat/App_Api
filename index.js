@@ -13,14 +13,14 @@ const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
 const createToken = (payload) => {
   const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64');
   const payloadStr = Buffer.from(JSON.stringify({ ...payload, exp: Date.now() + 24 * 60 * 60 * 1000 })).toString('base64');
-  const signature = require('crypto').createHmac('sha256', JWT_SECRET).update(`${header}.${payloadStr}`).digest('base64');
-  return `${header}.${payloadStr}.${signature}`;
+  const signature = require('crypto').createHmac('sha256', JWT_SECRET).update(${header}.${payloadStr}).digest('base64');
+  return ${header}.${payloadStr}.${signature};
 };
 
 const verifyToken = (token) => {
   try {
     const [header, payload, signature] = token.split('.');
-    const expectedSignature = require('crypto').createHmac('sha256', JWT_SECRET).update(`${header}.${payload}`).digest('base64');
+    const expectedSignature = require('crypto').createHmac('sha256', JWT_SECRET).update(${header}.${payload}).digest('base64');
     
     if (signature !== expectedSignature) return null;
     
@@ -99,6 +99,18 @@ const initializeDatabase = async () => {
       )
     `);
 
+    // Students table (for courses relationship)
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS students (
+        sid SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        student_name VARCHAR(100) NOT NULL,
+        student_email VARCHAR(100),
+        enrollment_date DATE DEFAULT CURRENT_DATE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
     // Posts table (example entity)
     await pool.query(`
       CREATE TABLE IF NOT EXISTS posts (
@@ -108,6 +120,24 @@ const initializeDatabase = async () => {
         user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Courses table (as per your schema)
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS courses (
+        id SERIAL PRIMARY KEY,
+        sid INTEGER,
+        course_name TEXT NOT NULL,
+        assessment TEXT,
+        marks INTEGER,
+        date DATE,
+        status TEXT,
+        on_marks INTEGER,
+        CONSTRAINT courses_sid_fkey
+          FOREIGN KEY (sid)
+          REFERENCES students(sid)
+          ON DELETE CASCADE
       )
     `);
 
@@ -145,6 +175,22 @@ app.get('/', (req, res) => {
         getById: 'GET /api/posts/:id',
         update: 'PUT /api/posts/:id',
         delete: 'DELETE /api/posts/:id'
+      },
+      students: {
+        create: 'POST /api/students',
+        getAll: 'GET /api/students',
+        getById: 'GET /api/students/:id',
+        update: 'PUT /api/students/:id',
+        delete: 'DELETE /api/students/:id'
+      },
+      courses: {
+        create: 'POST /api/courses',
+        getAll: 'GET /api/courses',
+        getById: 'GET /api/courses/:id',
+        update: 'PUT /api/courses/:id',
+        delete: 'DELETE /api/courses/:id',
+        getByStudent: 'GET /api/students/:sid/courses',
+        getStats: 'GET /api/courses/stats'
       }
     }
   });
@@ -258,7 +304,365 @@ app.get('/api/auth/profile', authenticateToken, (req, res) => {
   });
 });
 
-// Posts CRUD Routes
+// Students CRUD Routes
+// Create student
+app.post('/api/students', authenticateToken, async (req, res) => {
+  try {
+    const { student_name, student_email } = req.body;
+
+    if (!student_name) {
+      return res.status(400).json({ error: 'Student name is required' });
+    }
+
+    const result = await pool.query(
+      'INSERT INTO students (user_id, student_name, student_email) VALUES ($1, $2, $3) RETURNING *',
+      [req.user.id, student_name, student_email]
+    );
+
+    res.status(201).json({
+      message: 'Student created successfully',
+      student: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Create student error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get all students
+app.get('/api/students', authenticateToken, async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const offset = (page - 1) * limit;
+
+    const result = await pool.query(`
+      SELECT s.*, u.username as created_by
+      FROM students s 
+      JOIN users u ON s.user_id = u.id 
+      ORDER BY s.created_at DESC 
+      LIMIT $1 OFFSET $2
+    `, [limit, offset]);
+
+    const countResult = await pool.query('SELECT COUNT(*) FROM students');
+    const total = parseInt(countResult.rows[0].count);
+
+    res.json({
+      students: result.rows,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit)
+      }
+    });
+  } catch (error) {
+    console.error('Get students error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get student by ID
+app.get('/api/students/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const result = await pool.query(`
+      SELECT s.*, u.username as created_by
+      FROM students s 
+      JOIN users u ON s.user_id = u.id 
+      WHERE s.sid = $1
+    `, [id]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Student not found' });
+    }
+
+    res.json({ student: result.rows[0] });
+  } catch (error) {
+    console.error('Get student error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Update student
+app.put('/api/students/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { student_name, student_email } = req.body;
+
+    // Check if student exists and belongs to user
+    const existingStudent = await pool.query(
+      'SELECT sid FROM students WHERE sid = $1 AND user_id = $2',
+      [id, req.user.id]
+    );
+
+    if (existingStudent.rows.length === 0) {
+      return res.status(404).json({ error: 'Student not found or not authorized' });
+    }
+
+    const result = await pool.query(
+      'UPDATE students SET student_name = $1, student_email = $2 WHERE sid = $3 RETURNING *',
+      [student_name, student_email, id]
+    );
+
+    res.json({
+      message: 'Student updated successfully',
+      student: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Update student error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Delete student
+app.delete('/api/students/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const result = await pool.query(
+      'DELETE FROM students WHERE sid = $1 AND user_id = $2 RETURNING sid',
+      [id, req.user.id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Student not found or not authorized' });
+    }
+
+    res.json({ message: 'Student deleted successfully' });
+  } catch (error) {
+    console.error('Delete student error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Courses CRUD Routes
+// Create course
+app.post('/api/courses', authenticateToken, async (req, res) => {
+  try {
+    const { sid, course_name, assessment, marks, date, status, on_marks } = req.body;
+
+    if (!sid || !course_name) {
+      return res.status(400).json({ error: 'Student ID and course name are required' });
+    }
+
+    // Verify student belongs to the authenticated user
+    const studentCheck = await pool.query(
+      'SELECT sid FROM students WHERE sid = $1 AND user_id = $2',
+      [sid, req.user.id]
+    );
+
+    if (studentCheck.rows.length === 0) {
+      return res.status(403).json({ error: 'Student not found or not authorized' });
+    }
+
+    const result = await pool.query(
+      'INSERT INTO courses (sid, course_name, assessment, marks, date, status, on_marks) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
+      [sid, course_name, assessment, marks, date, status, on_marks]
+    );
+
+    res.status(201).json({
+      message: 'Course created successfully',
+      course: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Create course error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get all courses
+app.get('/api/courses', authenticateToken, async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const offset = (page - 1) * limit;
+
+    const result = await pool.query(`
+      SELECT c.*, s.student_name, s.student_email
+      FROM courses c 
+      JOIN students s ON c.sid = s.sid 
+      WHERE s.user_id = $1
+      ORDER BY c.date DESC, c.id DESC
+      LIMIT $2 OFFSET $3
+    `, [req.user.id, limit, offset]);
+
+    const countResult = await pool.query(`
+      SELECT COUNT(*) 
+      FROM courses c 
+      JOIN students s ON c.sid = s.sid 
+      WHERE s.user_id = $1
+    `, [req.user.id]);
+    
+    const total = parseInt(countResult.rows[0].count);
+
+    res.json({
+      courses: result.rows,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit)
+      }
+    });
+  } catch (error) {
+    console.error('Get courses error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get course by ID
+app.get('/api/courses/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const result = await pool.query(`
+      SELECT c.*, s.student_name, s.student_email
+      FROM courses c 
+      JOIN students s ON c.sid = s.sid 
+      WHERE c.id = $1 AND s.user_id = $2
+    `, [id, req.user.id]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Course not found' });
+    }
+
+    res.json({ course: result.rows[0] });
+  } catch (error) {
+    console.error('Get course error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Update course
+app.put('/api/courses/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { course_name, assessment, marks, date, status, on_marks } = req.body;
+
+    // Check if course exists and belongs to user's student
+    const existingCourse = await pool.query(`
+      SELECT c.id 
+      FROM courses c 
+      JOIN students s ON c.sid = s.sid 
+      WHERE c.id = $1 AND s.user_id = $2
+    `, [id, req.user.id]);
+
+    if (existingCourse.rows.length === 0) {
+      return res.status(404).json({ error: 'Course not found or not authorized' });
+    }
+
+    const result = await pool.query(
+      'UPDATE courses SET course_name = $1, assessment = $2, marks = $3, date = $4, status = $5, on_marks = $6 WHERE id = $7 RETURNING *',
+      [course_name, assessment, marks, date, status, on_marks, id]
+    );
+
+    res.json({
+      message: 'Course updated successfully',
+      course: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Update course error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Delete course
+app.delete('/api/courses/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const result = await pool.query(`
+      DELETE FROM courses c
+      USING students s
+      WHERE c.sid = s.sid AND c.id = $1 AND s.user_id = $2
+      RETURNING c.id
+    `, [id, req.user.id]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Course not found or not authorized' });
+    }
+
+    res.json({ message: 'Course deleted successfully' });
+  } catch (error) {
+    console.error('Delete course error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get courses by student ID
+app.get('/api/students/:sid/courses', authenticateToken, async (req, res) => {
+  try {
+    const { sid } = req.params;
+
+    // Verify student belongs to the authenticated user
+    const studentCheck = await pool.query(
+      'SELECT sid FROM students WHERE sid = $1 AND user_id = $2',
+      [sid, req.user.id]
+    );
+
+    if (studentCheck.rows.length === 0) {
+      return res.status(403).json({ error: 'Student not found or not authorized' });
+    }
+
+    const result = await pool.query(`
+      SELECT c.*, s.student_name, s.student_email
+      FROM courses c
+      JOIN students s ON c.sid = s.sid
+      WHERE c.sid = $1
+      ORDER BY c.date DESC, c.id DESC
+    `, [sid]);
+
+    res.json({ courses: result.rows });
+  } catch (error) {
+    console.error('Get student courses error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get course statistics
+app.get('/api/courses/stats', authenticateToken, async (req, res) => {
+  try {
+    const stats = await pool.query(`
+      SELECT 
+        COUNT(*) as total_courses,
+        COUNT(DISTINCT c.sid) as total_students_with_courses,
+        AVG(CASE WHEN c.marks IS NOT NULL AND c.on_marks IS NOT NULL AND c.on_marks > 0 
+            THEN (c.marks::float / c.on_marks::float) * 100 
+            ELSE NULL END) as average_percentage,
+        COUNT(CASE WHEN c.status = 'passed' THEN 1 END) as passed_count,
+        COUNT(CASE WHEN c.status = 'failed' THEN 1 END) as failed_count
+      FROM courses c
+      JOIN students s ON c.sid = s.sid
+      WHERE s.user_id = $1
+    `, [req.user.id]);
+
+    const coursesByName = await pool.query(`
+      SELECT 
+        c.course_name,
+        COUNT(*) as count,
+        AVG(CASE WHEN c.marks IS NOT NULL AND c.on_marks IS NOT NULL AND c.on_marks > 0 
+            THEN (c.marks::float / c.on_marks::float) * 100 
+            ELSE NULL END) as average_percentage
+      FROM courses c
+      JOIN students s ON c.sid = s.sid
+      WHERE s.user_id = $1
+      GROUP BY c.course_name
+      ORDER BY count DESC
+    `, [req.user.id]);
+
+    res.json({
+      overview: stats.rows[0],
+      courseBreakdown: coursesByName.rows
+    });
+  } catch (error) {
+    console.error('Get course stats error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Posts CRUD Routes (existing code)
 // Create post
 app.post('/api/posts', authenticateToken, async (req, res) => {
   try {
@@ -425,9 +829,9 @@ app.use((req, res) => {
 
 // Start server
 app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
-  console.log(`Health check: http://localhost:${PORT}/health`);
-  console.log(`API docs: http://localhost:${PORT}/`);
+  console.log(Server is running on port ${PORT});
+  console.log(Health check: http://localhost:${PORT}/health);
+  console.log(API docs: http://localhost:${PORT}/);
 });
 
 // Graceful shutdown
