@@ -84,11 +84,6 @@ const authenticateToken = async (req, res, next) => {
   }
 };
 
-// Database initialization
-
-
-
-
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.status(200).json({ 
@@ -236,7 +231,7 @@ app.post('/api/students', authenticateToken, async (req, res) => {
   try {
     const { name, email } = req.body;
 
-    if (!student_name) {
+    if (!name) {
       return res.status(400).json({ error: 'Student name is required' });
     }
 
@@ -314,7 +309,7 @@ app.get('/api/students/:id', authenticateToken, async (req, res) => {
 app.put('/api/students/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, semail } = req.body;
+    const { name, email } = req.body;
 
     // Check if student exists and belongs to user
     const existingStudent = await pool.query(
@@ -328,7 +323,7 @@ app.put('/api/students/:id', authenticateToken, async (req, res) => {
 
     const result = await pool.query(
       'UPDATE students SET name = $1, email = $2 WHERE sid = $3 RETURNING *',
-      [student_name, student_email, id]
+      [name, email, id]
     );
 
     res.json({
@@ -532,7 +527,7 @@ app.get('/api/students/:sid/courses', authenticateToken, async (req, res) => {
     }
 
     const result = await pool.query(`
-      SELECT c.*, s.student_name, s.student_email
+      SELECT c.*, s.name, s.email
       FROM courses c
       JOIN students s ON c.sid = s.sid
       WHERE c.sid = $1
@@ -587,7 +582,7 @@ app.get('/api/courses/stats', authenticateToken, async (req, res) => {
   }
 });
 
-// Posts CRUD Routes (existing code)
+// Posts CRUD Routes
 // Create post
 app.post('/api/posts', authenticateToken, async (req, res) => {
   try {
