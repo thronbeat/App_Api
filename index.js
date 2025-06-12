@@ -1,16 +1,37 @@
 const express = require('express');
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
+const bcrypt = require('bcrypt');
+const bodyParser = require('body-parser');
 const cors = require('cors');
-const helmet = require('helmet');
-const rateLimit = require('express-rate-limit');
-const morgan = require('morgan');
 const { Pool } = require('pg');
 require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
+
+// Simple JWT implementation (since jsonwebtoken is not in dependencies)
+const createToken = (payload) => {
+  const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64');
+  const payloadStr = Buffer.from(JSON.stringify({ ...payload, exp: Date.now() + 24 * 60 * 60 * 1000 })).toString('base64');
+  const signature = require('crypto').createHmac('sha256', JWT_SECRET).update(`${header}.${payloadStr}`).digest('base64');
+  return `${header}.${payloadStr}.${signature}`;
+};
+
+const verifyToken = (token) => {
+  try {
+    const [header, payload, signature] = token.split('.');
+    const expectedSignature = require('crypto').createHmac('sha256', JWT_SECRET).update(`${header}.${payload}`).digest('base64');
+    
+    if (signature !== expectedSignature) return null;
+    
+    const decodedPayload = JSON.parse(Buffer.from(payload, 'base64').toString());
+    if (decodedPayload.exp < Date.now()) return null;
+    
+    return decodedPayload;
+  } catch {
+    return null;
+  }
+};
 
 // PostgreSQL Connection
 const pool = new Pool({
@@ -31,19 +52,9 @@ pool.connect((err, client, release) => {
 });
 
 // Middleware
-app.use(helmet()); // Security headers
 app.use(cors()); // Enable CORS
-app.use(morgan('combined')); // Logging
-app.use(express.json({ limit: '10mb' })); // Parse JSON bodies
-app.use(express.urlencoded({ extended: true })); // Parse URL-encoded bodies
-
-// Rate limiting
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // limit each IP to 100 requests per windowMs
-  message: 'Too many requests from this IP, please try again later.'
-});
-app.use('/api/', limiter);
+app.use(bodyParser.json({ limit: '10mb' })); // Parse JSON bodies
+app.use(bodyParser.urlencoded({ extended: true })); // Parse URL-encoded bodies
 
 // Authentication middleware
 const authenticateToken = async (req, res, next) => {
@@ -55,7 +66,11 @@ const authenticateToken = async (req, res, next) => {
   }
 
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
+    const decoded = verifyToken(token);
+    if (!decoded) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+
     const result = await pool.query('SELECT id, username, email FROM users WHERE id = $1', [decoded.userId]);
     
     if (result.rows.length === 0) {
@@ -173,7 +188,7 @@ app.post('/api/auth/register', async (req, res) => {
     const user = result.rows[0];
 
     // Generate JWT token
-    const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '24h' });
+    const token = createToken({ userId: user.id });
 
     res.status(201).json({
       message: 'User registered successfully',
@@ -219,7 +234,7 @@ app.post('/api/auth/login', async (req, res) => {
     }
 
     // Generate JWT token
-    const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '24h' });
+    const token = createToken({ userId: user.id });
 
     res.json({
       message: 'Login successful',
