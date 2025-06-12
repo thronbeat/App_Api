@@ -85,65 +85,9 @@ const authenticateToken = async (req, res, next) => {
 };
 
 // Database initialization
-const initializeDatabase = async () => {
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS users (
-        id SERIAL PRIMARY KEY,
-        username VARCHAR(50) UNIQUE NOT NULL,
-        email VARCHAR(100) UNIQUE NOT NULL,
-        password VARCHAR(255) NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
 
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS students (
-        sid SERIAL PRIMARY KEY,
-        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-        student_name VARCHAR(100) NOT NULL,
-        student_email VARCHAR(100),
-        enrollment_date DATE DEFAULT CURRENT_DATE,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
 
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS posts (
-        id SERIAL PRIMARY KEY,
-        title VARCHAR(255) NOT NULL,
-        content TEXT,
-        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
 
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS courses (
-        id SERIAL PRIMARY KEY,
-        sid INTEGER,
-        course_name TEXT NOT NULL,
-        assessment TEXT,
-        marks INTEGER,
-        date DATE,
-        status TEXT,
-        on_marks INTEGER,
-        CONSTRAINT courses_sid_fkey
-          FOREIGN KEY (sid)
-          REFERENCES students(sid)
-          ON DELETE CASCADE
-      )
-    `);
-
-    console.log('Database tables initialized successfully');
-  } catch (error) {
-    console.error('Error initializing database:', error);
-  }
-};
-
-initializeDatabase();
 
 // Health check endpoint
 app.get('/health', (req, res) => {
