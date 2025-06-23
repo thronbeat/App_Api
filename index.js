@@ -71,7 +71,7 @@ const authenticateToken = async (req, res, next) => {
       return res.status(401).json({ error: 'Invalid token' });
     }
 
-    const result = await pool.query('SELECT id, username, email FROM users WHERE id = $1', [decoded.userId]);
+    const result = await pool.query('SELECT id, username, email FROM students WHERE id = $1', [decoded.userId]);
     
     if (result.rows.length === 0) {
       return res.status(401).json({ error: 'Invalid token' });
@@ -96,7 +96,7 @@ app.get('/health', (req, res) => {
 // Root endpoint
 app.get('/', (req, res) => {
   res.json({ 
-    message: 'Welcome to Node.js API',
+    message: 'Welcome to Student Progress Tracking API',
     version: '1.0.0',
     endpoints: {
       auth: {
@@ -104,28 +104,22 @@ app.get('/', (req, res) => {
         login: 'POST /api/auth/login',
         profile: 'GET /api/auth/profile'
       },
-      posts: {
-        create: 'POST /api/posts',
-        getAll: 'GET /api/posts',
-        getById: 'GET /api/posts/:id',
-        update: 'PUT /api/posts/:id',
-        delete: 'DELETE /api/posts/:id'
-      },
-      students: {
-        create: 'POST /api/students',
-        getAll: 'GET /api/students',
-        getById: 'GET /api/students/:id',
-        update: 'PUT /api/students/:id',
-        delete: 'DELETE /api/students/:id'
-      },
       courses: {
         create: 'POST /api/courses',
         getAll: 'GET /api/courses',
         getById: 'GET /api/courses/:id',
         update: 'PUT /api/courses/:id',
-        delete: 'DELETE /api/courses/:id',
-        getByStudent: 'GET /api/students/:sid/courses',
-        getStats: 'GET /api/courses/stats'
+        delete: 'DELETE /api/courses/:id'
+      },
+      marks: {
+        add: 'POST /api/courses/:courseId/marks',
+        getByCourse: 'GET /api/courses/:courseId/marks',
+        update: 'PUT /api/marks/:markId',
+        delete: 'DELETE /api/marks/:markId'
+      },
+      progress: {
+        getOverall: 'GET /api/progress',
+        getByCourse: 'GET /api/courses/:courseId/progress'
       }
     }
   });
@@ -134,10 +128,10 @@ app.get('/', (req, res) => {
 // Auth Routes
 app.post('/api/auth/register', async (req, res) => {
   try {
-    const { username, email, password } = req.body;
+    const { username, email, password, name } = req.body;
 
-    if (!username || !email || !password) {
-      return res.status(400).json({ error: 'Username, email, and password are required' });
+    if (!username || !email || !password || !name) {
+      return res.status(400).json({ error: 'Username, email, password, and name are required' });
     }
 
     if (password.length < 6) {
@@ -145,7 +139,7 @@ app.post('/api/auth/register', async (req, res) => {
     }
 
     const existingUser = await pool.query(
-      'SELECT id FROM users WHERE username = $1 OR email = $2',
+      'SELECT id FROM students WHERE username = $1 OR email = $2',
       [username, email]
     );
 
@@ -157,19 +151,20 @@ app.post('/api/auth/register', async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, saltRounds);
 
     const result = await pool.query(
-      'INSERT INTO users (username, email, password) VALUES ($1, $2, $3) RETURNING id, username, email, created_at',
-      [username, email, hashedPassword]
+      'INSERT INTO students (username, email, password, name) VALUES ($1, $2, $3, $4) RETURNING id, username, email, name, created_at',
+      [username, email, hashedPassword, name]
     );
 
     const user = result.rows[0];
     const token = createToken({ userId: user.id });
 
     res.status(201).json({
-      message: 'User registered successfully',
+      message: 'Student registered successfully',
       user: {
         id: user.id,
         username: user.username,
         email: user.email,
+        name: user.name,
         created_at: user.created_at
       },
       token
@@ -189,7 +184,7 @@ app.post('/api/auth/login', async (req, res) => {
     }
 
     const result = await pool.query(
-      'SELECT id, username, email, password FROM users WHERE username = $1 OR email = $1',
+      'SELECT id, username, email, password, name FROM students WHERE username = $1 OR email = $1',
       [username]
     );
 
@@ -210,7 +205,8 @@ app.post('/api/auth/login', async (req, res) => {
       user: {
         id: user.id,
         username: user.username,
-        email: user.email
+        email: user.email,
+        name: user.name
       },
       token
     });
@@ -226,160 +222,18 @@ app.get('/api/auth/profile', authenticateToken, (req, res) => {
   });
 });
 
-// Students CRUD Routes
-app.post('/api/students', authenticateToken, async (req, res) => {
-  try {
-    const { name, email } = req.body;
-
-    if (!name) {
-      return res.status(400).json({ error: 'Student name is required' });
-    }
-
-    const result = await pool.query(
-      'INSERT INTO students (user_id, name, email) VALUES ($1, $2, $3) RETURNING *',
-      [req.user.id, name, email]
-    );
-
-    res.status(201).json({
-      message: 'Student created successfully',
-      student: result.rows[0]
-    });
-  } catch (error) {
-    console.error('Create student error:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-app.get('/api/students', authenticateToken, async (req, res) => {
-  try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
-    const offset = (page - 1) * limit;
-
-    const result = await pool.query(`
-      SELECT s.*, u.username as created_by
-      FROM students s 
-      JOIN users u ON s.user_id = u.id 
-      ORDER BY s.created_at DESC 
-      LIMIT $1 OFFSET $2
-    `, [limit, offset]);
-
-    const countResult = await pool.query('SELECT COUNT(*) FROM students');
-    const total = parseInt(countResult.rows[0].count);
-
-    res.json({
-      students: result.rows,
-      pagination: {
-        page,
-        limit,
-        total,
-        pages: Math.ceil(total / limit)
-      }
-    });
-  } catch (error) {
-    console.error('Get students error:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// Get student by ID
-app.get('/api/students/:id', authenticateToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const result = await pool.query(`
-      SELECT s.*, u.username as created_by
-      FROM students s 
-      JOIN users u ON s.user_id = u.id 
-      WHERE s.sid = $1
-    `, [id]);
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Student not found' });
-    }
-
-    res.json({ student: result.rows[0] });
-  } catch (error) {
-    console.error('Get student error:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// Update student
-app.put('/api/students/:id', authenticateToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { name, email } = req.body;
-
-    // Check if student exists and belongs to user
-    const existingStudent = await pool.query(
-      'SELECT sid FROM students WHERE sid = $1 AND user_id = $2',
-      [id, req.user.id]
-    );
-
-    if (existingStudent.rows.length === 0) {
-      return res.status(404).json({ error: 'Student not found or not authorized' });
-    }
-
-    const result = await pool.query(
-      'UPDATE students SET name = $1, email = $2 WHERE sid = $3 RETURNING *',
-      [name, email, id]
-    );
-
-    res.json({
-      message: 'Student updated successfully',
-      student: result.rows[0]
-    });
-  } catch (error) {
-    console.error('Update student error:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// Delete student
-app.delete('/api/students/:id', authenticateToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const result = await pool.query(
-      'DELETE FROM students WHERE sid = $1 AND user_id = $2 RETURNING sid',
-      [id, req.user.id]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Student not found or not authorized' });
-    }
-
-    res.json({ message: 'Student deleted successfully' });
-  } catch (error) {
-    console.error('Delete student error:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// Courses CRUD Routes
-// Create course
+// Course Routes
 app.post('/api/courses', authenticateToken, async (req, res) => {
   try {
-    const { sid, course_name, assessment, marks, date, status, on_marks } = req.body;
+    const { course_name, description, total_marks } = req.body;
 
-    if (!sid || !course_name) {
-      return res.status(400).json({ error: 'Student ID and course name are required' });
-    }
-
-    // Verify student belongs to the authenticated user
-    const studentCheck = await pool.query(
-      'SELECT sid FROM students WHERE sid = $1 AND user_id = $2',
-      [sid, req.user.id]
-    );
-
-    if (studentCheck.rows.length === 0) {
-      return res.status(403).json({ error: 'Student not found or not authorized' });
+    if (!course_name || !total_marks) {
+      return res.status(400).json({ error: 'Course name and total marks are required' });
     }
 
     const result = await pool.query(
-      'INSERT INTO courses (sid, course_name, assessment, marks, date, status, on_marks) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
-      [sid, course_name, assessment, marks, date, status, on_marks]
+      'INSERT INTO courses (student_id, course_name, description, total_marks) VALUES ($1, $2, $3, $4) RETURNING *',
+      [req.user.id, course_name, description || '', total_marks]
     );
 
     res.status(201).json({
@@ -392,29 +246,21 @@ app.post('/api/courses', authenticateToken, async (req, res) => {
   }
 });
 
-// Get all courses
 app.get('/api/courses', authenticateToken, async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
     const offset = (page - 1) * limit;
 
-    const result = await pool.query(`
-      SELECT c.*, s.name, s.email
-      FROM courses c 
-      JOIN students s ON c.sid = s.sid 
-      WHERE s.user_id = $1
-      ORDER BY c.date DESC, c.id DESC
-      LIMIT $2 OFFSET $3
-    `, [req.user.id, limit, offset]);
+    const result = await pool.query(
+      'SELECT * FROM courses WHERE student_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3',
+      [req.user.id, limit, offset]
+    );
 
-    const countResult = await pool.query(`
-      SELECT COUNT(*) 
-      FROM courses c 
-      JOIN students s ON c.sid = s.sid 
-      WHERE s.user_id = $1
-    `, [req.user.id]);
-    
+    const countResult = await pool.query(
+      'SELECT COUNT(*) FROM courses WHERE student_id = $1',
+      [req.user.id]
+    );
     const total = parseInt(countResult.rows[0].count);
 
     res.json({
@@ -432,17 +278,14 @@ app.get('/api/courses', authenticateToken, async (req, res) => {
   }
 });
 
-// Get course by ID
 app.get('/api/courses/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
 
-    const result = await pool.query(`
-      SELECT c.*, s.name, s.email
-      FROM courses c 
-      JOIN students s ON c.sid = s.sid 
-      WHERE c.id = $1 AND s.user_id = $2
-    `, [id, req.user.id]);
+    const result = await pool.query(
+      'SELECT * FROM courses WHERE id = $1 AND student_id = $2',
+      [id, req.user.id]
+    );
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Course not found' });
@@ -455,28 +298,19 @@ app.get('/api/courses/:id', authenticateToken, async (req, res) => {
   }
 });
 
-// Update course
 app.put('/api/courses/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
-    const { course_name, assessment, marks, date, status, on_marks } = req.body;
-
-    // Check if course exists and belongs to user's student
-    const existingCourse = await pool.query(`
-      SELECT c.id 
-      FROM courses c 
-      JOIN students s ON c.sid = s.sid 
-      WHERE c.id = $1 AND s.user_id = $2
-    `, [id, req.user.id]);
-
-    if (existingCourse.rows.length === 0) {
-      return res.status(404).json({ error: 'Course not found or not authorized' });
-    }
+    const { course_name, description, total_marks } = req.body;
 
     const result = await pool.query(
-      'UPDATE courses SET course_name = $1, assessment = $2, marks = $3, date = $4, status = $5, on_marks = $6 WHERE id = $7 RETURNING *',
-      [course_name, assessment, marks, date, status, on_marks, id]
+      'UPDATE courses SET course_name = $1, description = $2, total_marks = $3 WHERE id = $4 AND student_id = $5 RETURNING *',
+      [course_name, description, total_marks, id, req.user.id]
     );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Course not found or not authorized' });
+    }
 
     res.json({
       message: 'Course updated successfully',
@@ -488,17 +322,14 @@ app.put('/api/courses/:id', authenticateToken, async (req, res) => {
   }
 });
 
-// Delete course
 app.delete('/api/courses/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
 
-    const result = await pool.query(`
-      DELETE FROM courses c
-      USING students s
-      WHERE c.sid = s.sid AND c.id = $1 AND s.user_id = $2
-      RETURNING c.id
-    `, [id, req.user.id]);
+    const result = await pool.query(
+      'DELETE FROM courses WHERE id = $1 AND student_id = $2 RETURNING id',
+      [id, req.user.id]
+    );
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Course not found or not authorized' });
@@ -511,221 +342,197 @@ app.delete('/api/courses/:id', authenticateToken, async (req, res) => {
   }
 });
 
-// Get courses by student ID
-app.get('/api/students/:sid/courses', authenticateToken, async (req, res) => {
+// Marks Routes
+app.post('/api/courses/:courseId/marks', authenticateToken, async (req, res) => {
   try {
-    const { sid } = req.params;
+    const { courseId } = req.params;
+    const { assessment_name, marks_obtained, date } = req.body;
 
-    // Verify student belongs to the authenticated user
-    const studentCheck = await pool.query(
-      'SELECT sid FROM students WHERE sid = $1 AND user_id = $2',
-      [sid, req.user.id]
-    );
-
-    if (studentCheck.rows.length === 0) {
-      return res.status(403).json({ error: 'Student not found or not authorized' });
+    if (!assessment_name || !marks_obtained || !date) {
+      return res.status(400).json({ error: 'Assessment name, marks obtained, and date are required' });
     }
 
-    const result = await pool.query(`
-      SELECT c.*, s.name, s.email
-      FROM courses c
-      JOIN students s ON c.sid = s.sid
-      WHERE c.sid = $1
-      ORDER BY c.date DESC, c.id DESC
-    `, [sid]);
+    // Verify course belongs to student
+    const courseCheck = await pool.query(
+      'SELECT id FROM courses WHERE id = $1 AND student_id = $2',
+      [courseId, req.user.id]
+    );
 
-    res.json({ courses: result.rows });
-  } catch (error) {
-    console.error('Get student courses error:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// Get course statistics
-app.get('/api/courses/stats', authenticateToken, async (req, res) => {
-  try {
-    const stats = await pool.query(`
-      SELECT 
-        COUNT(*) as total_courses,
-        COUNT(DISTINCT c.sid) as total_students_with_courses,
-        AVG(CASE WHEN c.marks IS NOT NULL AND c.on_marks IS NOT NULL AND c.on_marks > 0 
-            THEN (c.marks::float / c.on_marks::float) * 100 
-            ELSE NULL END) as average_percentage,
-        COUNT(CASE WHEN c.status = 'passed' THEN 1 END) as passed_count,
-        COUNT(CASE WHEN c.status = 'failed' THEN 1 END) as failed_count
-      FROM courses c
-      JOIN students s ON c.sid = s.sid
-      WHERE s.user_id = $1
-    `, [req.user.id]);
-
-    const coursesByName = await pool.query(`
-      SELECT 
-        c.course_name,
-        COUNT(*) as count,
-        AVG(CASE WHEN c.marks IS NOT NULL AND c.on_marks IS NOT NULL AND c.on_marks > 0 
-            THEN (c.marks::float / c.on_marks::float) * 100 
-            ELSE NULL END) as average_percentage
-      FROM courses c
-      JOIN students s ON c.sid = s.sid
-      WHERE s.user_id = $1
-      GROUP BY c.course_name
-      ORDER BY count DESC
-    `, [req.user.id]);
-
-    res.json({
-      overview: stats.rows[0],
-      courseBreakdown: coursesByName.rows
-    });
-  } catch (error) {
-    console.error('Get course stats error:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// Posts CRUD Routes
-// Create post
-app.post('/api/posts', authenticateToken, async (req, res) => {
-  try {
-    const { title, content } = req.body;
-
-    if (!title) {
-      return res.status(400).json({ error: 'Title is required' });
+    if (courseCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Course not found or not authorized' });
     }
 
     const result = await pool.query(
-      'INSERT INTO posts (title, content, user_id) VALUES ($1, $2, $3) RETURNING *',
-      [title, content || '', req.user.id]
+      'INSERT INTO marks (course_id, student_id, assessment_name, marks_obtained, date) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+      [courseId, req.user.id, assessment_name, marks_obtained, date]
     );
 
     res.status(201).json({
-      message: 'Post created successfully',
-      post: result.rows[0]
+      message: 'Marks added successfully',
+      mark: result.rows[0]
     });
   } catch (error) {
-    console.error('Create post error:', error);
+    console.error('Add marks error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-// Get all posts
-app.get('/api/posts', async (req, res) => {
+app.get('/api/courses/:courseId/marks', authenticateToken, async (req, res) => {
   try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
-    const offset = (page - 1) * limit;
+    const { courseId } = req.params;
 
-    const result = await pool.query(`
-      SELECT p.*, u.username 
-      FROM posts p 
-      JOIN users u ON p.user_id = u.id 
-      ORDER BY p.created_at DESC 
-      LIMIT $1 OFFSET $2
-    `, [limit, offset]);
-
-    const countResult = await pool.query('SELECT COUNT(*) FROM posts');
-    const total = parseInt(countResult.rows[0].count);
-
-    res.json({
-      posts: result.rows,
-      pagination: {
-        page,
-        limit,
-        total,
-        pages: Math.ceil(total / limit)
-      }
-    });
-  } catch (error) {
-    console.error('Get posts error:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// Get post by ID
-app.get('/api/posts/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const result = await pool.query(`
-      SELECT p.*, u.username 
-      FROM posts p 
-      JOIN users u ON p.user_id = u.id 
-      WHERE p.id = $1
-    `, [id]);
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Post not found' });
-    }
-
-    res.json({ post: result.rows[0] });
-  } catch (error) {
-    console.error('Get post error:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// Update post
-app.put('/api/posts/:id', authenticateToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { title, content } = req.body;
-
-    // Check if post exists and belongs to user
-    const existingPost = await pool.query(
-      'SELECT id FROM posts WHERE id = $1 AND user_id = $2',
-      [id, req.user.id]
+    const courseCheck = await pool.query(
+      'SELECT id FROM courses WHERE id = $1 AND student_id = $2',
+      [courseId, req.user.id]
     );
 
-    if (existingPost.rows.length === 0) {
-      return res.status(404).json({ error: 'Post not found or not authorized' });
+    if (courseCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Course not found or not authorized' });
     }
 
     const result = await pool.query(
-      'UPDATE posts SET title = $1, content = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3 RETURNING *',
-      [title, content, id]
+      'SELECT * FROM marks WHERE course_id = $1 AND student_id = $2 ORDER BY date DESC',
+      [courseId, req.user.id]
     );
 
-    res.json({
-      message: 'Post updated successfully',
-      post: result.rows[0]
-    });
+    res.json({ marks: result.rows });
   } catch (error) {
-    console.error('Update post error:', error);
+    console.error('Get marks error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-// Delete post
-app.delete('/api/posts/:id', authenticateToken, async (req, res) => {
+app.put('/api/marks/:markId', authenticateToken, async (req, res) => {
   try {
-    const { id } = req.params;
+    const { markId } = req.params;
+    const { assessment_name, marks_obtained, date } = req.body;
 
     const result = await pool.query(
-      'DELETE FROM posts WHERE id = $1 AND user_id = $2 RETURNING id',
-      [id, req.user.id]
+      'UPDATE marks SET assessment_name = $1, marks_obtained = $2, date = $3 WHERE id = $4 AND student_id = $5 RETURNING *',
+      [assessment_name, marks_obtained, date, markId, req.user.id]
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Post not found or not authorized' });
+      return res.status(404).json({ error: 'Mark not found or not authorized' });
     }
 
-    res.json({ message: 'Post deleted successfully' });
+    res.json({
+      message: 'Mark updated successfully',
+      mark: result.rows[0]
+    });
   } catch (error) {
-    console.error('Delete post error:', error);
+    console.error('Update mark error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-// Get user's posts
-app.get('/api/user/posts', authenticateToken, async (req, res) => {
+app.delete('/api/marks/:markId', authenticateToken, async (req, res) => {
   try {
+    const { markId } = req.params;
+
     const result = await pool.query(
-      'SELECT * FROM posts WHERE user_id = $1 ORDER BY created_at DESC',
+      'DELETE FROM marks WHERE id = $1 AND student_id = $2 RETURNING id',
+      [markId, req.user.id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Mark not found or not authorized' });
+    }
+
+    res.json({ message: 'Mark deleted successfully' });
+  } catch (error) {
+    console.error('Delete mark error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Progress Tracking Routes
+app.get('/api/progress', authenticateToken, async (req, res) => {
+  try {
+    const courses = await pool.query(
+      'SELECT id, course_name, total_marks FROM courses WHERE student_id = $1',
       [req.user.id]
     );
 
-    res.json({ posts: result.rows });
+    const progress = await Promise.all(courses.rows.map(async (course) => {
+      const marks = await pool.query(
+        'SELECT SUM(marks_obtained) as total_obtained FROM marks WHERE course_id = $1 AND student_id = $2',
+        [course.id, req.user.id]
+      );
+
+      const total_obtained = marks.rows[0].total_obtained || 0;
+      const percentage = course.total_marks > 0 ? (total_obtained / course.total_marks) * 100 : 0;
+
+      return {
+        course_id: course.id,
+        course_name: course.course_name,
+        total_marks: course.total_marks,
+        marks_obtained: total_obtained,
+        percentage: Number(percentage.toFixed(2)),
+        status: percentage >= 50 ? 'Passing' : 'Needs Improvement'
+      };
+    }));
+
+    const overall = progress.reduce((acc, curr) => ({
+      total_marks: acc.total_marks + curr.total_marks,
+      marks_obtained: acc.marks_obtained + curr.marks_obtained,
+      courses: acc.courses + 1
+    }), { total_marks: 0, marks_obtained: 0, courses: 0 });
+
+    const overall_percentage = overall.total_marks > 0 ? 
+      (overall.marks_obtained / overall.total_marks) * 100 : 0;
+
+    res.json({
+      overall: {
+        total_courses: overall.courses,
+        total_marks: overall.total_marks,
+        marks_obtained: overall.marks_obtained,
+        percentage: Number(overall_percentage.toFixed(2)),
+        status: overall_percentage >= 50 ? 'Passing' : 'Needs Improvement'
+      },
+      courses: progress
+    });
   } catch (error) {
-    console.error('Get user posts error:', error);
+    console.error('Get progress error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.get('/api/courses/:courseId/progress', authenticateToken, async (req, res) => {
+  try {
+    const { courseId } = req.params;
+
+    const course = await pool.query(
+      'SELECT id, course_name, total_marks FROM courses WHERE id = $1 AND student_id = $2',
+      [courseId, req.user.id]
+    );
+
+    if (course.rows.length === 0) {
+      return res.status(404).json({ error: 'Course not found or not authorized' });
+    }
+
+    const marks = await pool.query(
+      'SELECT * FROM marks WHERE course_id = $1 AND student_id = $2 ORDER BY date DESC',
+      [courseId, req.user.id]
+    );
+
+    const total_obtained = marks.rows.reduce((sum, mark) => sum + mark.marks_obtained, 0);
+    const percentage = course.rows[0].total_marks > 0 ? 
+      (total_obtained / course.rows[0].total_marks) * 100 : 0;
+
+    res.json({
+      course: {
+        id: course.rows[0].id,
+        name: course.rows[0].course_name,
+        total_marks: course.rows[0].total_marks,
+        marks_obtained: total_obtained,
+        percentage: Number(percentage.toFixed(2)),
+        status: percentage >= 50 ? 'Passing' : 'Needs Improvement'
+      },
+      assessments: marks.rows
+    });
+  } catch (error) {
+    console.error('Get course progress error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
