@@ -15,17 +15,17 @@ const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
 
 // Middleware
-app.use(helmet()); // Security headers
-app.use(morgan('combined')); // Logging
+app.use(helmet());
+app.use(morgan('combined'));
 app.use(cors({
-  origin: ['http://localhost:3000', 'https://your-android-app-domain'], // Adjust for production
+  origin: ['http://localhost:3000', 'https://your-android-app-domain'],
   credentials: true
 }));
 app.use(bodyParser.json({ limit: '10mb' }));
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100 // Limit each IP to 100 requests
+  windowMs: 15 * 60 * 1000,
+  max: 100
 }));
 
 // PostgreSQL Connection
@@ -34,7 +34,7 @@ const pool = new Pool({
   ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
 });
 
-// Connect to database with retry
+// Connect with retry
 const connectWithRetry = async () => {
   try {
     await pool.connect();
@@ -136,7 +136,6 @@ app.post('/api/auth/register', validateRegister, async (req, res) => {
   try {
     const { username, email, password, name } = req.body;
 
-    // Check for existing user
     const existingUser = await pool.query(
       'SELECT id FROM students WHERE username = $1 OR email = $2',
       [username, email]
@@ -145,18 +144,15 @@ app.post('/api/auth/register', validateRegister, async (req, res) => {
       return res.status(400).json({ error: 'Username or email already exists' });
     }
 
-    // Hash password
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
 
-    // Insert user
     const { rows } = await pool.query(
       'INSERT INTO students (username, email, password, name) VALUES ($1, $2, $3, $4) RETURNING id, username, email, name, created_at',
       [username, email, hashedPassword, name]
     );
     const user = rows[0];
 
-    // Generate JWT
     const token = jwt.sign({ id: user.id }, JWT_SECRET, { expiresIn: '24h' });
 
     res.status(201).json({
@@ -185,7 +181,6 @@ app.post('/api/auth/login', validateLogin, async (req, res) => {
   try {
     const { username, password } = req.body;
 
-    // Find user
     const { rows } = await pool.query(
       'SELECT id, username, email, name, password, created_at FROM students WHERE username = $1 OR email = $1',
       [username]
@@ -195,13 +190,11 @@ app.post('/api/auth/login', validateLogin, async (req, res) => {
     }
     const user = rows[0];
 
-    // Verify password
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
       return res.status(401).json({ error: 'Invalid username or password' });
     }
 
-    // Generate JWT
     const token = jwt.sign({ id: user.id }, JWT_SECRET, { expiresIn: '24h' });
 
     res.status(200).json({
