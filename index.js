@@ -1,6 +1,5 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
-const bodyParser = require('body-parser');
 const cors = require('cors');
 const { Pool } = require('pg');
 const jwt = require('jsonwebtoken');
@@ -8,17 +7,17 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const morgan = require('morgan');
 const { body, validationResult } = require('express-validator');
-const crypto = require('crypto'); // Explicitly require crypto
+const crypto = require('crypto');
 require('dotenv').config();
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
 
 app.use(helmet());
 app.use(morgan('combined'));
 app.use(cors({
-    origin: ['http://localhost:3000', '*'], // Adjust for production
+    origin: ['http://localhost:3000', '*'],
     credentials: true
 }));
 app.use(express.json({ limit: '10mb' }));
@@ -30,16 +29,43 @@ app.use(rateLimit({
 
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
-    ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+    ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+    max: 10, // Maximum number of clients in the pool
+    idleTimeoutMillis: 30000, // Close idle clients after 30 seconds
+    connectionTimeoutMillis: 2000 // Timeout for establishing new connections
 });
 
-const connectWithRetry = async () => {
+// Handle unexpected pool errors to prevent crashes
+pool.on('error', (err, client) => {
+    console.error('Unexpected error on idle client:', err.stack);
+});
+
+// Keep-alive query to prevent connection timeouts
+const keepAlive = async () => {
     try {
-        await pool.connect();
-        console.log('PostgreSQL connected successfully');
+        await pool.query('SELECT NOW()');
+        console.log('Keep-alive query executed successfully');
     } catch (err) {
-        console.error('Database connection error:', err.stack);
-        setTimeout(connectWithRetry, 5000);
+        console.error('Keep-alive query error:', err.stack);
+    }
+};
+setInterval(keepAlive, 5 * 60 * 1000); // Run every 5 minutes
+
+const connectWithRetry = async (retries = 5, delay = 5000) => {
+    for (let attempt = 1; attempt <= retries; attempt++) {
+        try {
+            const client = await pool.connect();
+            console.log('PostgreSQL connected successfully');
+            client.release();
+            return;
+        } catch (err) {
+            console.error(`Database connection attempt ${attempt} failed:`, err.stack);
+            if (attempt === retries) {
+                console.error('Max retries reached. Could not connect to database.');
+                process.exit(1);
+            }
+            await new Promise(resolve => setTimeout(resolve, delay));
+        }
     }
 };
 connectWithRetry();
@@ -66,7 +92,7 @@ const validateRegister = [
     body('username').trim().isLength({ min: 3, max: 50 }).withMessage('Username must be 3-50 characters'),
     body('email').isEmail().normalizeEmail().withMessage('Invalid email'),
     body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
-    body('name').trim().isLength({ min: 1, max: 100 }).withMessage('Name is required')
+    body('name').trim().notEmpty().withMessage('Name is required')
 ];
 
 const validateLogin = [
@@ -81,7 +107,7 @@ const validateCourse = [
 ];
 
 const validateMark = [
-    body('assessment_name').trim().isLength({ min: 1, max: 255 }).withMessage('Assessment name is required'),
+    body('assessment').trim().isLength({ min: 1, max: 255 }).withMessage('Assessment name is required'),
     body('marks_obtained').isInt({ min: 0 }).withMessage('Marks obtained must be non-negative'),
     body('date').isDate({ format: 'YYYY-MM-DD' }).withMessage('Date must be in YYYY-MM-DD format')
 ];
@@ -329,7 +355,7 @@ app.post('/api/courses/:courseId/marks', authenticateToken, validateMark, async 
 
     try {
         const courseId = parseInt(req.params.courseId);
-        const { assessment_name, marks_obtained, date } = req.body;
+        const { assessment, marks_obtained, date } = req.body;
 
         const { rows: courseRows } = await pool.query(
             'SELECT total_marks FROM courses WHERE id = $1 AND student_id = $2',
@@ -344,7 +370,7 @@ app.post('/api/courses/:courseId/marks', authenticateToken, validateMark, async 
 
         const { rows } = await pool.query(
             'INSERT INTO marks (course_id, student_id, assessment_name, marks_obtained, date) VALUES ($1, $2, $3, $4, $5) RETURNING id, course_id, assessment_name, marks_obtained, date, created_at',
-            [courseId, req.user.id, assessment_name, marks_obtained, date]
+            [courseId, req.user.id, assessment, marks_obtained, date]
         );
         res.status(201).json({ mark: rows[0] });
     } catch (error) {
@@ -361,7 +387,7 @@ app.put('/api/marks/:id', authenticateToken, validateMark, async (req, res) => {
 
     try {
         const markId = parseInt(req.params.id);
-        const { assessment_name, marks_obtained, date } = req.body;
+        const { assessment, marks_obtained, date } = req.body;
 
         const { rows: markRows } = await pool.query(
             'SELECT course_id FROM marks WHERE id = $1 AND student_id = $2',
@@ -381,7 +407,7 @@ app.put('/api/marks/:id', authenticateToken, validateMark, async (req, res) => {
 
         const { rows } = await pool.query(
             'UPDATE marks SET assessment_name = $1, marks_obtained = $2, date = $3 WHERE id = $4 AND student_id = $5 RETURNING id, course_id, assessment_name, marks_obtained, date, created_at',
-            [assessment_name, marks_obtained, date, markId, req.user.id]
+            [assessment, marks_obtained, date, markId, req.user.id]
         );
         res.status(200).json({ mark: rows[0] });
     } catch (error) {
@@ -453,5 +479,13 @@ app.listen(PORT, () => {
 process.on('SIGINT', async () => {
     console.log('Shutting down gracefully...');
     await pool.end();
+    console.log('Database pool closed.');
+    process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+    console.log('Shutting down gracefully...');
+    await pool.end();
+    console.log('Database pool closed.');
     process.exit(0);
 });
